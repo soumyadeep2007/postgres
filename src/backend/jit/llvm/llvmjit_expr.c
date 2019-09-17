@@ -278,14 +278,21 @@ llvm_compile_expr(ExprState *state)
 					LLVMValueRef l_jit_deform = NULL;
 					const TupleTableSlotOps *tts_ops = NULL;
 
-					b_fetch = l_bb_before_v(opblocks[i + 1],
-											"op.%d.fetch", i);
-
 					if (op->d.fetch.known_desc)
 						desc = op->d.fetch.known_desc;
 
 					if (op->d.fetch.fixed)
+					{
 						tts_ops = op->d.fetch.kind;
+						/*
+						 * Deforming is not required if the tuple is virtual.
+						 */
+						if (tts_ops && tts_ops == &TTSOpsVirtual)
+						{
+							LLVMBuildBr(b, opblocks[i + 1]);
+							break;
+						}
+					}
 
 					if (opcode == EEOP_INNER_FETCHSOME)
 						v_slot = v_innerslot;
@@ -294,13 +301,8 @@ llvm_compile_expr(ExprState *state)
 					else
 						v_slot = v_scanslot;
 
-					/*
-					 * Check if all required attributes are available, or
-					 * whether deforming is required.
-					 *
-					 * TODO: skip nvalid check if slot is fixed and known to
-					 * be a virtual slot.
-					 */
+					b_fetch = l_bb_before_v(opblocks[i + 1],
+											"op.%d.fetch", i);
 					v_nvalid =
 						l_load_struct_gep(b, v_slot,
 										  FIELDNO_TUPLETABLESLOT_NVALID,
