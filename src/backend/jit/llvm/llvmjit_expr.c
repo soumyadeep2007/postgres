@@ -65,6 +65,8 @@ static void build_EvalXFunc(LLVMBuilderRef b, LLVMModuleRef mod,
 							ExprEvalStep *op);
 static LLVMValueRef create_LifetimeEnd(LLVMModuleRef mod);
 
+static void eliminate_empty_opblock(LLVMBasicBlockRef opblock,
+									LLVMBasicBlockRef successor);
 
 /*
  * JIT compile expression.
@@ -278,14 +280,23 @@ llvm_compile_expr(ExprState *state)
 					LLVMValueRef l_jit_deform = NULL;
 					const TupleTableSlotOps *tts_ops = NULL;
 
-					b_fetch = l_bb_before_v(opblocks[i + 1],
-											"op.%d.fetch", i);
-
 					if (op->d.fetch.known_desc)
 						desc = op->d.fetch.known_desc;
 
 					if (op->d.fetch.fixed)
+					{
 						tts_ops = op->d.fetch.kind;
+						/*
+						 * Deforming is not required if the tuple is virtual.
+						 * In such a case, the current opblock is redundant and
+						 * should be unlinked from it's predecessors and removed.
+						 */
+						if (tts_ops && tts_ops == &TTSOpsVirtual)
+						{
+							eliminate_empty_opblock(opblocks[i], opblocks[i + 1]);
+							break;
+						}
+					}
 
 					if (opcode == EEOP_INNER_FETCHSOME)
 						v_slot = v_innerslot;
@@ -294,13 +305,8 @@ llvm_compile_expr(ExprState *state)
 					else
 						v_slot = v_scanslot;
 
-					/*
-					 * Check if all required attributes are available, or
-					 * whether deforming is required.
-					 *
-					 * TODO: skip nvalid check if slot is fixed and known to
-					 * be a virtual slot.
-					 */
+					b_fetch = l_bb_before_v(opblocks[i + 1],
+											"op.%d.fetch", i);
 					v_nvalid =
 						l_load_struct_gep(b, v_slot,
 										  FIELDNO_TUPLETABLESLOT_NVALID,
@@ -2602,4 +2608,31 @@ create_LifetimeEnd(LLVMModuleRef mod)
 	Assert(LLVMGetIntrinsicID(fn));
 
 	return fn;
+}
+
+/*
+ * Unlink given opblock from CFG and remove it.
+ */
+static void
+eliminate_empty_opblock(LLVMBasicBlockRef opblock,
+						LLVMBasicBlockRef successor)
+{
+	LLVMUseRef   useRef = NULL;
+	LLVMValueRef instr   = NULL;
+	/*
+	 * Assert that all uses are terminator instructions of the opblock's
+	 * predecessors. We want to rewire all such references of the opblock to
+	 * point to its successor.
+	 */
+	useRef = LLVMGetFirstUse((LLVMValueRef) opblock);
+	for (; useRef != NULL; useRef = LLVMGetNextUse(useRef))
+	{
+		instr = LLVMGetUser(useRef);
+		Assert (LLVMIsATerminatorInst(instr));
+	}
+	/*
+	 * Perform the rewiring and delete the opblock.
+	 */
+	LLVMReplaceAllUsesWith((LLVMValueRef) opblock, (LLVMValueRef) successor);
+	LLVMDeleteBasicBlock(opblock);
 }
