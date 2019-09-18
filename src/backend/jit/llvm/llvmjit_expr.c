@@ -275,7 +275,7 @@ llvm_compile_expr(ExprState *state)
 					LLVMValueRef v_slot;
 					LLVMBasicBlockRef b_fetch;
 					LLVMValueRef v_nvalid;
-					LLVMValueRef l_jit_deform = NULL;
+					LLVMValueRef deform_function = NULL;
 					const TupleTableSlotOps *tts_ops = NULL;
 
 					if (op->d.fetch.known_desc)
@@ -323,30 +323,25 @@ llvm_compile_expr(ExprState *state)
 					 */
 					if (tts_ops && desc && (context->base.flags & PGJIT_DEFORM))
 					{
-						l_jit_deform =
+						deform_function =
 							slot_compile_deform(context, desc,
 												tts_ops,
 												op->d.fetch.last_var);
-					}
-
-					if (l_jit_deform)
-					{
 						LLVMValueRef params[1];
-
 						params[0] = v_slot;
-
-						LLVMBuildCall(b, l_jit_deform,
+						LLVMBuildCall(b, deform_function,
 									  params, lengthof(params), "");
 					}
 					else
 					{
+						deform_function = llvm_get_decl(mod, FuncSlotGetsomeattrsInt);
 						LLVMValueRef params[2];
 
 						params[0] = v_slot;
 						params[1] = l_int32_const(op->d.fetch.last_var);
 
 						LLVMBuildCall(b,
-									  llvm_get_decl(mod, FuncSlotGetsomeattrsInt),
+									  deform_function,
 									  params, lengthof(params), "");
 					}
 
