@@ -2277,7 +2277,10 @@ ExecPushExprSlots(ExprState *state, LastAttnumInfo *info)
 	scratch.resvalue = NULL;
 	scratch.resnull = NULL;
 
-	/* Emit steps as needed */
+	/*
+	 * Push deform steps. We can skip pushing steps if the slot is virtual and
+	 * the slot type is fixed as virtual tuples don't need to be deformed.
+	 */
 	if (info->last_inner > 0)
 	{
 		scratch.opcode = EEOP_INNER_FETCHSOME;
@@ -2286,7 +2289,8 @@ ExecPushExprSlots(ExprState *state, LastAttnumInfo *info)
 		scratch.d.fetch.kind = NULL;
 		scratch.d.fetch.known_desc = NULL;
 		ExecComputeSlotInfo(state, &scratch);
-		ExprEvalPushStep(state, &scratch);
+		if (scratch.d.fetch.kind == &TTSOpsVirtual && scratch.d.fetch.fixed)
+			ExprEvalPushStep(state, &scratch);
 	}
 	if (info->last_outer > 0)
 	{
@@ -2296,7 +2300,8 @@ ExecPushExprSlots(ExprState *state, LastAttnumInfo *info)
 		scratch.d.fetch.kind = NULL;
 		scratch.d.fetch.known_desc = NULL;
 		ExecComputeSlotInfo(state, &scratch);
-		ExprEvalPushStep(state, &scratch);
+		if (scratch.d.fetch.kind == &TTSOpsVirtual && scratch.d.fetch.fixed)
+			ExprEvalPushStep(state, &scratch);
 	}
 	if (info->last_scan > 0)
 	{
@@ -2306,7 +2311,8 @@ ExecPushExprSlots(ExprState *state, LastAttnumInfo *info)
 		scratch.d.fetch.kind = NULL;
 		scratch.d.fetch.known_desc = NULL;
 		ExecComputeSlotInfo(state, &scratch);
-		ExprEvalPushStep(state, &scratch);
+		if (scratch.d.fetch.kind == &TTSOpsVirtual && scratch.d.fetch.fixed)
+			ExprEvalPushStep(state, &scratch);
 	}
 }
 
@@ -3352,14 +3358,18 @@ ExecBuildGroupingEqual(TupleDesc ldesc, TupleDesc rdesc,
 	}
 	Assert(maxatt >= 0);
 
-	/* push deform steps */
+	/*
+	 * Push deform steps. We can skip pushing steps if the slot is virtual and
+	 * the slot type is fixed as virtual tuples don't need to be deformed.
+	 */
 	scratch.opcode = EEOP_INNER_FETCHSOME;
 	scratch.d.fetch.last_var = maxatt;
 	scratch.d.fetch.fixed = false;
 	scratch.d.fetch.known_desc = ldesc;
 	scratch.d.fetch.kind = lops;
 	ExecComputeSlotInfo(state, &scratch);
-	ExprEvalPushStep(state, &scratch);
+	if (scratch.d.fetch.kind == &TTSOpsVirtual && scratch.d.fetch.fixed)
+		ExprEvalPushStep(state, &scratch);
 
 	scratch.opcode = EEOP_OUTER_FETCHSOME;
 	scratch.d.fetch.last_var = maxatt;
@@ -3367,7 +3377,8 @@ ExecBuildGroupingEqual(TupleDesc ldesc, TupleDesc rdesc,
 	scratch.d.fetch.known_desc = rdesc;
 	scratch.d.fetch.kind = rops;
 	ExecComputeSlotInfo(state, &scratch);
-	ExprEvalPushStep(state, &scratch);
+	if (scratch.d.fetch.kind == &TTSOpsVirtual && scratch.d.fetch.fixed)
+		ExprEvalPushStep(state, &scratch);
 
 	/*
 	 * Start comparing at the last field (least significant sort key). That's

@@ -297,9 +297,6 @@ llvm_compile_expr(ExprState *state)
 					/*
 					 * Check if all required attributes are available, or
 					 * whether deforming is required.
-					 *
-					 * TODO: skip nvalid check if slot is fixed and known to
-					 * be a virtual slot.
 					 */
 					v_nvalid =
 						l_load_struct_gep(b, v_slot,
