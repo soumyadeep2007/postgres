@@ -265,11 +265,9 @@ fmgr_info_cxt_security(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,
 /*
  * Return module and C function name providing implementation of functionId.
  *
- * If *mod == NULL and *fn == NULL, no C symbol is known to implement
- * function.
- *
  * If *mod == NULL and *fn != NULL, the function is implemented by a symbol in
- * the main binary.
+ * the main binary. If the function being looked up is not a C language
+ * function, it's language handler name is returned.
  *
  * If *mod != NULL and *fn !=NULL the function is implemented in an extension
  * shared object.
@@ -285,6 +283,11 @@ fmgr_symbol(Oid functionId, char **mod, char **fn)
 	bool		isnull;
 	Datum		prosrcattr;
 	Datum		probinattr;
+	Oid			language;
+	HeapTuple	languageTuple;
+	Form_pg_language languageStruct;
+	HeapTuple	plHandlerProcedureTuple;
+	Form_pg_proc plHandlerProcedureStruct;
 
 	/* Otherwise we need the pg_proc entry */
 	procedureTuple = SearchSysCache1(PROCOID, ObjectIdGetDatum(functionId));
@@ -304,8 +307,9 @@ fmgr_symbol(Oid functionId, char **mod, char **fn)
 		return;
 	}
 
+	language = procedureStruct->prolang;
 	/* see fmgr_info_cxt_security for the individual cases */
-	switch (procedureStruct->prolang)
+	switch (language)
 	{
 		case INTERNALlanguageId:
 			prosrcattr = SysCacheGetAttr(PROCOID, procedureTuple,
@@ -342,9 +346,21 @@ fmgr_symbol(Oid functionId, char **mod, char **fn)
 			break;
 
 		default:
+			languageTuple = SearchSysCache1(LANGOID,
+											 ObjectIdGetDatum(language));
+			if (!HeapTupleIsValid(languageTuple))
+				elog(ERROR, "cache lookup failed for language %u", language);
+			languageStruct = (Form_pg_language) GETSTRUCT(languageTuple);
+			plHandlerProcedureTuple = SearchSysCache1(PROCOID,
+													  ObjectIdGetDatum(
+														  languageStruct->lanplcallfoid));
+			if (!HeapTupleIsValid(plHandlerProcedureTuple))
+				elog(ERROR, "cache lookup failed for function %u", functionId);
+			plHandlerProcedureStruct = (Form_pg_proc) GETSTRUCT(plHandlerProcedureTuple);
 			*mod = NULL;
-			*fn = NULL;			/* unknown, pass pointer */
-			break;
+			*fn = pstrdup(NameStr(plHandlerProcedureStruct->proname));
+			ReleaseSysCache(languageTuple);
+			ReleaseSysCache(plHandlerProcedureTuple);
 	}
 
 	ReleaseSysCache(procedureTuple);

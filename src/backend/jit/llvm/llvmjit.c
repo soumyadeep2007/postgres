@@ -369,38 +369,17 @@ llvm_function_reference(LLVMJitContext *context,
 
 	fmgr_symbol(fcinfo->flinfo->fn_oid, &modname, &basename);
 
-	if (modname != NULL && basename != NULL)
+	Assert(basename != NULL);
+
+	if (modname != NULL)
 	{
 		/* external function in loadable library */
 		funcname = psprintf("pgextern.%s.%s", modname, basename);
 	}
-	else if (basename != NULL)
-	{
-		/* internal function */
-		funcname = psprintf("%s", basename);
-	}
 	else
 	{
-		/*
-		 * Function we don't know to handle, return pointer. We do so by
-		 * creating a global constant containing a pointer to the function.
-		 * Makes IR more readable.
-		 */
-		LLVMValueRef v_fn_addr;
-
-		funcname = psprintf("pgoidextern.%u",
-							fcinfo->flinfo->fn_oid);
-		v_fn = LLVMGetNamedGlobal(mod, funcname);
-		if (v_fn != 0)
-			return LLVMBuildLoad(builder, v_fn, "");
-
-		v_fn_addr = l_ptr_const(fcinfo->flinfo->fn_addr, TypePGFunction);
-
-		v_fn = LLVMAddGlobal(mod, TypePGFunction, funcname);
-		LLVMSetInitializer(v_fn, v_fn_addr);
-		LLVMSetGlobalConstant(v_fn, true);
-
-		return LLVMBuildLoad(builder, v_fn, "");
+		/* internal function or a PL handler */
+		funcname = psprintf("%s", basename);
 	}
 
 	/* check if function already has been added */
