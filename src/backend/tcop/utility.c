@@ -85,6 +85,7 @@ static void ProcessUtilitySlow(ParseState *pstate,
 							   DestReceiver *dest,
 							   QueryCompletion *qc);
 static void ExecDropStmt(DropStmt *stmt, bool isTopLevel);
+static void AlterSystemSetWALProhibitState(AlterSystemWALProhibitState *stmt);
 
 /*
  * CommandIsReadOnly: is an executable query read-only?
@@ -219,6 +220,7 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 				return COMMAND_IS_NOT_READ_ONLY;
 			}
 
+		case T_AlterSystemWALProhibitState:
 		case T_AlterSystemStmt:
 			{
 				/*
@@ -832,6 +834,11 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 		case T_AlterSystemStmt:
 			PreventInTransactionBlock(isTopLevel, "ALTER SYSTEM");
 			AlterSystemSetConfigFile((AlterSystemStmt *) parsetree);
+			break;
+
+		case T_AlterSystemWALProhibitState:
+			PreventInTransactionBlock(isTopLevel, "ALTER SYSTEM");
+			AlterSystemSetWALProhibitState((AlterSystemWALProhibitState *) parsetree);
 			break;
 
 		case T_VariableSetStmt:
@@ -2772,6 +2779,7 @@ CreateCommandTag(Node *parsetree)
 			tag = CMDTAG_REFRESH_MATERIALIZED_VIEW;
 			break;
 
+		case T_AlterSystemWALProhibitState:
 		case T_AlterSystemStmt:
 			tag = CMDTAG_ALTER_SYSTEM;
 			break;
@@ -3635,4 +3643,16 @@ GetCommandLogLevel(Node *parsetree)
 	}
 
 	return lev;
+}
+
+/*
+ * AlterSystemSetWALProhibitState
+ *
+ * Execute ALTER SYSTEM READ { ONLY | WRITE } statement.
+ */
+static void
+AlterSystemSetWALProhibitState(AlterSystemWALProhibitState *stmt)
+{
+	/* some code */
+	elog(INFO, "AlterSystemSetWALProhibitState() called");
 }
