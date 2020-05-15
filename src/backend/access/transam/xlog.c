@@ -31,6 +31,7 @@
 #include "access/timeline.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/walprohibit.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "access/xlogarchive.h"
@@ -662,10 +663,10 @@ typedef struct XLogCtlData
 	RecoveryState SharedRecoveryState;
 
 	/*
-	 * WALProhibited indicates if we have stopped allowing WAL writes.
+	 * SharedWALProhibitState indicates current WAL prohibit state.
 	 * Protected by info_lck.
 	 */
-	bool		WALProhibited;
+	uint32		SharedWALProhibitState;
 
 	/*
 	 * SharedHotStandbyActive indicates if we allow hot standby queries to be
@@ -7714,6 +7715,15 @@ StartupXLOG(void)
 	XLogCtl->LogwrtRqst.Flush = EndOfLog;
 
 	/*
+	 * Before enabling WAL insertion update WAL prohibit state in shared memory
+	 * that will decide the further WAL insert should be allowed or not.
+	 */
+	SpinLockAcquire(&XLogCtl->info_lck);
+	XLogCtl->SharedWALProhibitState = ControlFile->wal_prohibited ?
+		WALPROHIBIT_STATE_READ_ONLY : WALPROHIBIT_STATE_READ_WRITE;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	/*
 	 * Update full_page_writes in shared memory and write an XLOG_FPW_CHANGE
 	 * record before resource manager writes cleanup WAL records or checkpoint
 	 * record is written.
@@ -7723,7 +7733,15 @@ StartupXLOG(void)
 	UpdateFullPageWrites();
 	LocalXLogInsertAllowed = -1;
 
-	if (InRecovery)
+	/*
+	 * Skip end-of-recovery checkpoint if the system is in WAL prohibited state.
+	 */
+	if (ControlFile->wal_prohibited && InRecovery)
+	{
+		ereport(LOG,
+				(errmsg("skipping startup checkpoint because the system is read only")));
+	}
+	else if (InRecovery)
 	{
 		/*
 		 * Perform a checkpoint to update all our recovery activity to disk.
@@ -7969,12 +7987,54 @@ StartupXLOG(void)
 		RequestCheckpoint(CHECKPOINT_FORCE);
 }
 
-void
-MakeReadOnlyXLOG(void)
+/* Atomically return the current server WAL prohibited state */
+uint32
+GetWALProhibitState(void)
 {
+	uint32		state;
+
 	SpinLockAcquire(&XLogCtl->info_lck);
-	XLogCtl->WALProhibited = true;
+	state = XLogCtl->SharedWALProhibitState;
 	SpinLockRelease(&XLogCtl->info_lck);
+
+	return state;
+}
+
+/*
+ * SetWALProhibitState: Change current wal prohibit state to the input state.
+ *
+ * If the server is already completely moved to the requested WAL prohibit
+ * state, or if the desired state is same as the current state, return false,
+ * indicating that the server state did not change. Else return true.
+ */
+bool
+SetWALProhibitState(uint32 new_state)
+{
+	uint32		cur_state;
+
+	cur_state = GetWALProhibitState();
+
+	if (new_state == cur_state ||
+		new_state == (cur_state | WALPROHIBIT_TRANSITION_IN_PROGRESS))
+		return false;
+
+	/* Update new state in share memory */
+	SpinLockAcquire(&XLogCtl->info_lck);
+	XLogCtl->SharedWALProhibitState = new_state;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	/* Update control file if it is the final state */
+	if (!(new_state & WALPROHIBIT_TRANSITION_IN_PROGRESS))
+	{
+		bool	wal_prohibited = (new_state & WALPROHIBIT_STATE_READ_ONLY) != 0;
+
+		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+		ControlFile->wal_prohibited = wal_prohibited;
+		UpdateControlFile();
+		LWLockRelease(ControlFileLock);
+	}
+
+	return true;
 }
 
 /*
@@ -7983,9 +8043,7 @@ MakeReadOnlyXLOG(void)
 bool
 IsWALProhibited(void)
 {
-	volatile XLogCtlData *xlogctl = XLogCtl;
-
-	return xlogctl->WALProhibited;
+	return (GetWALProhibitState() & WALPROHIBIT_STATE_READ_ONLY) != 0;
 }
 
 /*
@@ -8253,7 +8311,6 @@ static void
 LocalSetXLogInsertAllowed(void)
 {
 	Assert(LocalXLogInsertAllowed == -1);
-	Assert(!IsWALProhibited());
 
 	LocalXLogInsertAllowed = 1;
 

@@ -30,6 +30,8 @@ ProcessBarrierWALProhibit(void)
 	 */
 	if (FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
 	{
+		Assert(GetWALProhibitState() & WALPROHIBIT_STATE_READ_ONLY);
+
 		/*
 		 * XXX: Kill off the whole session by throwing FATAL instead of killing
 		 * transaction by throwing ERROR due to following reasons that need be
@@ -64,6 +66,8 @@ ProcessBarrierWALProhibit(void)
 void
 AlterSystemSetWALProhibitState(AlterSystemWALProhibitState *stmt)
 {
+	uint32			state;
+
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -72,10 +76,22 @@ AlterSystemSetWALProhibitState(AlterSystemWALProhibitState *stmt)
 	/* Alter WAL prohibit state not allowed during recovery */
 	PreventCommandDuringRecovery("ALTER SYSTEM");
 
-	/* Yet to add ALTER SYTEM READ WRITE support */
-	if (!stmt->WALProhibited)
-		elog(ERROR, "XXX: Yet to implement");
+	/* Requested state */
+	state = stmt->WALProhibited ?
+		WALPROHIBIT_STATE_READ_ONLY : WALPROHIBIT_STATE_READ_WRITE;
 
-	MakeReadOnlyXLOG();
-	WaitForProcSignalBarrier(EmitProcSignalBarrier(PROCSIGNAL_BARRIER_WALPROHIBIT));
+	/*
+	 * Since we yet to convey this WAL prohibit state to all backend mark it
+	 * in-progress.
+	 */
+	state |= WALPROHIBIT_TRANSITION_IN_PROGRESS;
+
+	if (!SetWALProhibitState(state))
+		return; /* server is already in the desired state */
+
+	/*
+	 * Signal the checkpointer to do the actual state transition, and wait for
+	 * the state change to occur.
+	 */
+	WALProhibitRequest();
 }

@@ -39,6 +39,7 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "access/walprohibit.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "libpq/pqsignal.h"
@@ -127,6 +128,8 @@ typedef struct
 	ConditionVariable start_cv; /* signaled when ckpt_started advances */
 	ConditionVariable done_cv;	/* signaled when ckpt_done advances */
 
+	ConditionVariable readonly_cv; /* signaled when ckpt_started advances */
+
 	uint32		num_backend_writes; /* counts user backend buffer writes */
 	uint32		num_backend_fsync;	/* counts user backend fsync calls */
 
@@ -168,6 +171,7 @@ static bool IsCheckpointOnSchedule(double progress);
 static bool ImmediateCheckpointRequested(void);
 static bool CompactCheckpointerRequestQueue(void);
 static void UpdateSharedMemoryConfig(void);
+static void performWALProhibitStateChange(uint32 wal_state);
 
 /* Signal handlers */
 static void ReqCheckpointHandler(SIGNAL_ARGS);
@@ -332,6 +336,7 @@ CheckpointerMain(void)
 		pg_time_t	now;
 		int			elapsed_secs;
 		int			cur_timeout;
+		uint32		wal_state;
 
 		/* Clear any already-pending wakeups */
 		ResetLatch(MyLatch);
@@ -342,17 +347,27 @@ CheckpointerMain(void)
 		AbsorbSyncRequests();
 		HandleCheckpointerInterrupts();
 
-		/*
-		 * If the server is in WAL-Prohibited state then don't do anything until
-		 * someone wakes us up. E.g. a backend might later on request us to put
-		 * the system back to read-write.
-		 */
-		if (IsWALProhibited())
+		wal_state = GetWALProhibitState();
+
+		if (wal_state & WALPROHIBIT_TRANSITION_IN_PROGRESS)
 		{
+			/* Complete WAL prohibit state change request */
+			performWALProhibitStateChange(wal_state);
+			continue;
+		}
+		else if (wal_state & WALPROHIBIT_STATE_READ_ONLY)
+		{
+			/*
+			 * Don't do anything until someone wakes us up.  For example a
+			 * backend might later on request us to put the system back to
+			 * read-write wal prohibit sate.
+			 */
 			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, -1,
 							 WAIT_EVENT_CHECKPOINTER_MAIN);
 			continue;
 		}
+
+		Assert(wal_state == WALPROHIBIT_STATE_READ_WRITE);
 
 		/*
 		 * Detect a pending checkpoint request by checking whether the flags
@@ -891,6 +906,7 @@ CheckpointerShmemInit(void)
 		CheckpointerShmem->max_requests = NBuffers;
 		ConditionVariableInit(&CheckpointerShmem->start_cv);
 		ConditionVariableInit(&CheckpointerShmem->done_cv);
+		ConditionVariableInit(&CheckpointerShmem->readonly_cv);
 	}
 }
 
@@ -1119,6 +1135,94 @@ ForwardSyncRequest(const FileTag *ftag, SyncRequestType type)
 		SetLatch(ProcGlobal->checkpointerLatch);
 
 	return true;
+}
+
+/*
+ * WALProhibitedRequest: Request checkpointer to make the WALProhibitState to
+ * read-only.
+ */
+void
+WALProhibitRequest(void)
+{
+	/* Must not be called from checkpointer */
+	Assert(!AmCheckpointerProcess());
+	Assert(GetWALProhibitState() & WALPROHIBIT_TRANSITION_IN_PROGRESS);
+
+	/*
+	 * If in a standalone backend, just do it ourselves.
+	 */
+	if (!IsPostmasterEnvironment)
+	{
+		performWALProhibitStateChange(GetWALProhibitState());
+		return;
+	}
+
+	if (CheckpointerShmem->checkpointer_pid == 0)
+		elog(ERROR, "checkpointer is not running");
+
+	if (kill(CheckpointerShmem->checkpointer_pid, SIGINT) != 0)
+		elog(ERROR, "could not signal checkpointer: %m");
+
+	/* Wait for the state to change to read-only */
+	ConditionVariablePrepareToSleep(&CheckpointerShmem->readonly_cv);
+	for (;;)
+	{
+		/*  We'll be done once in-progress flag bit is cleared */
+		if (!(GetWALProhibitState() & WALPROHIBIT_TRANSITION_IN_PROGRESS))
+			break;
+
+		elog(DEBUG1, "WALProhibitRequest: Waiting for checkpointer");
+		ConditionVariableSleep(&CheckpointerShmem->readonly_cv,
+							   WAIT_EVENT_SYSTEM_WALPROHIBIT_STATE_CHANGE);
+	}
+	ConditionVariableCancelSleep();
+	elog(DEBUG1, "Done WALProhibitRequest");
+}
+
+/*
+ * performWALProhibitStateChange: checkpointer will call this to complete
+ * the requested WAL prohibit state transition.
+ */
+static void
+performWALProhibitStateChange(uint32 wal_state)
+{
+	uint64		barrierGeneration;
+
+	/*
+	 * Must be called from checkpointer. Otherwise, it must be single-user
+	 * backend.
+	 */
+	Assert(AmCheckpointerProcess() || !IsPostmasterEnvironment);
+	Assert(wal_state & WALPROHIBIT_TRANSITION_IN_PROGRESS);
+
+	/*
+	 * WAL prohibit state change is initiated. We need to complete the state
+	 * transition by setting requested WAL prohibit state in all backends.
+	 */
+	elog(DEBUG1, "waiting for backends to adopt requested WAL prohibit state");
+
+	/* Emit global barrier */
+	barrierGeneration = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_WALPROHIBIT);
+	WaitForProcSignalBarrier(barrierGeneration);
+
+	/* And flush all writes. */
+	XLogFlush(GetXLogWriteRecPtr());
+
+	/* Set final state by clearing in-progress flag bit */
+	if (SetWALProhibitState(wal_state & ~(WALPROHIBIT_TRANSITION_IN_PROGRESS)))
+	{
+		if ((wal_state & WALPROHIBIT_STATE_READ_ONLY) != 0)
+			ereport(LOG, (errmsg("system is now read only")));
+		else
+		{
+			/* Request checkpoint */
+			RequestCheckpoint(CHECKPOINT_IMMEDIATE);
+			ereport(LOG, (errmsg("system is now read write")));
+		}
+	}
+
+	/* Wake up the backend who requested the state change */
+	ConditionVariableBroadcast(&CheckpointerShmem->readonly_cv);
 }
 
 /*
