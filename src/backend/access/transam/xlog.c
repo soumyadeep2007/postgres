@@ -245,9 +245,10 @@ static bool LocalPromoteIsTriggered = false;
  *		0: unconditionally not allowed to insert XLOG
  *		-1: must check RecoveryInProgress(); disallow until it is false
  * Most processes start with -1 and transition to 1 after seeing that recovery
- * is not in progress.  But we can also force the value for special cases.
- * The coding in XLogInsertAllowed() depends on the first two of these states
- * being numerically the same as bool true and false.
+ * is not in progress or the server state is not a WAL prohibited state.  But
+ * we can also force the value for special cases.  The coding in
+ * XLogInsertAllowed() depends on the first two of these states being
+ * numerically the same as bool true and false.
  */
 static int	LocalXLogInsertAllowed = -1;
 
@@ -659,6 +660,12 @@ typedef struct XLogCtlData
 	 * recovery.  Protected by info_lck.
 	 */
 	RecoveryState SharedRecoveryState;
+
+	/*
+	 * WALProhibited indicates if we have stopped allowing WAL writes.
+	 * Protected by info_lck.
+	 */
+	bool		WALProhibited;
 
 	/*
 	 * SharedHotStandbyActive indicates if we allow hot standby queries to be
@@ -7962,6 +7969,25 @@ StartupXLOG(void)
 		RequestCheckpoint(CHECKPOINT_FORCE);
 }
 
+void
+MakeReadOnlyXLOG(void)
+{
+	SpinLockAcquire(&XLogCtl->info_lck);
+	XLogCtl->WALProhibited = true;
+	SpinLockRelease(&XLogCtl->info_lck);
+}
+
+/*
+ * Is the system still in WAL prohibited state?
+ */
+bool
+IsWALProhibited(void)
+{
+	volatile XLogCtlData *xlogctl = XLogCtl;
+
+	return xlogctl->WALProhibited;
+}
+
 /*
  * Checks if recovery has reached a consistent state. When consistency is
  * reached and we have a valid starting standby snapshot, tell postmaster
@@ -8177,9 +8203,9 @@ HotStandbyActiveInReplay(void)
 /*
  * Is this process allowed to insert new WAL records?
  *
- * Ordinarily this is essentially equivalent to !RecoveryInProgress().
- * But we also have provisions for forcing the result "true" or "false"
- * within specific processes regardless of the global state.
+ * Ordinarily this is essentially equivalent to !RecoveryInProgress() and
+ * !IsWALProhibited().  But we also have provisions for forcing the result
+ * "true" or "false" within specific processes regardless of the global state.
  */
 bool
 XLogInsertAllowed(void)
@@ -8193,14 +8219,25 @@ XLogInsertAllowed(void)
 		return (bool) LocalXLogInsertAllowed;
 
 	/*
-	 * Else, must check to see if we're still in recovery.
+	 * Else, must check to see if we're still in recovery
 	 */
 	if (RecoveryInProgress())
 		return false;
 
+	/* Or, in WAL prohibited state */
+	if (IsWALProhibited())
+	{
+		/*
+		 * Set it to "unconditionally false" to avoid checking until it gets
+		 * reset.
+		 */
+		LocalXLogInsertAllowed = 0;
+		return false;
+	}
+
 	/*
-	 * On exit from recovery, reset to "unconditionally true", since there is
-	 * no need to keep checking.
+	 * On exit from recovery or WAL prohibited state, reset to "unconditionally
+	 * true", since there is no need to keep checking.
 	 */
 	LocalXLogInsertAllowed = 1;
 	return true;
@@ -8216,10 +8253,18 @@ static void
 LocalSetXLogInsertAllowed(void)
 {
 	Assert(LocalXLogInsertAllowed == -1);
+	Assert(!IsWALProhibited());
+
 	LocalXLogInsertAllowed = 1;
 
 	/* Initialize as RecoveryInProgress() would do when switching state */
 	InitXLOGAccess();
+}
+
+void
+ResetLocalXLogInsertAllowed(void)
+{
+	LocalXLogInsertAllowed = -1;
 }
 
 /*
@@ -8513,7 +8558,10 @@ ShutdownXLOG(int code, Datum arg)
 
 	if (RecoveryInProgress())
 		CreateRestartPoint(CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_IMMEDIATE);
-	else
+	/*
+	 * Can't perform checkpoint or xlog rotation without writing WAL.
+	 */
+	else if (XLogInsertAllowed())
 	{
 		/*
 		 * If archiving is enabled, rotate the last XLOG file so that all the
@@ -8526,6 +8574,10 @@ ShutdownXLOG(int code, Datum arg)
 
 		CreateCheckPoint(CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_IMMEDIATE);
 	}
+	else
+		ereport(LOG,
+			   (errmsg("skipping shutdown checkpoint because the system is read only")));
+
 	ShutdownCLOG();
 	ShutdownCommitTs();
 	ShutdownSUBTRANS();

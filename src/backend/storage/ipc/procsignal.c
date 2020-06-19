@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include "access/parallel.h"
+#include "access/walprohibit.h"
 #include "commands/async.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -96,7 +97,6 @@ static volatile ProcSignalSlot *MyProcSignalSlot = NULL;
 
 static bool CheckProcSignal(ProcSignalReason reason);
 static void CleanupProcSignalState(int status, Datum arg);
-static bool ProcessBarrierPlaceholder(void);
 
 /*
  * ProcSignalShmemSize
@@ -510,9 +510,9 @@ ProcessProcSignalBarrier(void)
 			 * unconditionally, but it's more efficient to call only the ones
 			 * that might need us to do something based on the flags.
 			 */
-			if (BARRIER_SHOULD_CHECK(flags, PROCSIGNAL_BARRIER_PLACEHOLDER)
-				&& ProcessBarrierPlaceholder())
-				BARRIER_CLEAR_BIT(flags, PROCSIGNAL_BARRIER_PLACEHOLDER);
+			if (BARRIER_SHOULD_CHECK(flags, PROCSIGNAL_BARRIER_WALPROHIBIT)
+				&& ProcessBarrierWALProhibit())
+				BARRIER_CLEAR_BIT(flags, PROCSIGNAL_BARRIER_WALPROHIBIT);
 		}
 		PG_CATCH();
 		{
@@ -552,24 +552,6 @@ ProcessProcSignalBarrier(void)
 	 * next called.
 	 */
 	pg_atomic_write_u64(&MyProcSignalSlot->pss_barrierGeneration, shared_gen);
-}
-
-static bool
-ProcessBarrierPlaceholder(void)
-{
-	/*
-	 * XXX. This is just a placeholder until the first real user of this
-	 * machinery gets committed. Rename PROCSIGNAL_BARRIER_PLACEHOLDER to
-	 * PROCSIGNAL_BARRIER_SOMETHING_ELSE where SOMETHING_ELSE is something
-	 * appropriately descriptive. Get rid of this function and instead have
-	 * ProcessBarrierSomethingElse. Most likely, that function should live in
-	 * the file pertaining to that subsystem, rather than here.
-	 *
-	 * The return value should be 'true' if the barrier was successfully
-	 * absorbed and 'false' if not. Note that returning 'false' can lead to
-	 * very frequent retries, so try hard to make that an uncommon case.
-	 */
-	return true;
 }
 
 /*

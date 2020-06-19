@@ -343,6 +343,18 @@ CheckpointerMain(void)
 		HandleCheckpointerInterrupts();
 
 		/*
+		 * If the server is in WAL-Prohibited state then don't do anything until
+		 * someone wakes us up. E.g. a backend might later on request us to put
+		 * the system back to read-write.
+		 */
+		if (IsWALProhibited())
+		{
+			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, -1,
+							 WAIT_EVENT_CHECKPOINTER_MAIN);
+			continue;
+		}
+
+		/*
 		 * Detect a pending checkpoint request by checking whether the flags
 		 * word in shared memory is nonzero.  We shouldn't need to acquire the
 		 * ckpt_lck for this.

@@ -19,6 +19,7 @@
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/twophase.h"
+#include "access/walprohibit.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
@@ -85,7 +86,6 @@ static void ProcessUtilitySlow(ParseState *pstate,
 							   DestReceiver *dest,
 							   QueryCompletion *qc);
 static void ExecDropStmt(DropStmt *stmt, bool isTopLevel);
-static void AlterSystemSetWALProhibitState(AlterSystemWALProhibitState *stmt);
 
 /*
  * CommandIsReadOnly: is an executable query read-only?
@@ -3643,16 +3643,4 @@ GetCommandLogLevel(Node *parsetree)
 	}
 
 	return lev;
-}
-
-/*
- * AlterSystemSetWALProhibitState
- *
- * Execute ALTER SYSTEM READ { ONLY | WRITE } statement.
- */
-static void
-AlterSystemSetWALProhibitState(AlterSystemWALProhibitState *stmt)
-{
-	/* some code */
-	elog(INFO, "AlterSystemSetWALProhibitState() called");
 }
