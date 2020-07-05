@@ -360,10 +360,12 @@ ExecBuildProjectionInfo(List *targetList,
 	ExprState  *state;
 	ExprEvalStep scratch = {0};
 	ListCell   *lc;
+	List	   *tlist_vars;
 
 	projInfo->pi_exprContext = econtext;
 	/* We embed ExprState into ProjectionInfo instead of doing extra palloc */
 	projInfo->pi_state.tag = T_ExprState;
+	projInfo->has_non_slot_system_cols = false;
 	state = &projInfo->pi_state;
 	state->expr = (Expr *) targetList;
 	state->parent = parent;
@@ -455,7 +457,6 @@ ExecBuildProjectionInfo(List *targetList,
 			 */
 			ExecInitExprRec(tle->expr, state,
 							&state->resvalue, &state->resnull);
-
 			/*
 			 * Column might be referenced multiple times in upper nodes, so
 			 * force value to R/O - but only if it could be an expanded datum.
@@ -466,6 +467,22 @@ ExecBuildProjectionInfo(List *targetList,
 				scratch.opcode = EEOP_ASSIGN_TMP;
 			scratch.d.assign_tmp.resultnum = tle->resno - 1;
 			ExprEvalPushStep(state, &scratch);
+		}
+	}
+
+	/* Record system columns that are part of this projection */
+	tlist_vars = pull_var_clause((Node *) targetList,
+								 PVC_RECURSE_AGGREGATES |
+									 PVC_RECURSE_WINDOWFUNCS |
+									 PVC_INCLUDE_PLACEHOLDERS);
+	foreach(lc, tlist_vars)
+	{
+		Var *var = (Var *) lfirst(lc);
+		if (var->varattno < 0 && (var->varattno != TableOidAttributeNumber ||
+			var->varattno != SelfItemPointerAttributeNumber))
+		{
+			projInfo->has_non_slot_system_cols = true;
+			break;
 		}
 	}
 
