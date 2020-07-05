@@ -678,7 +678,27 @@ ExecInsert(ModifyTableState *mtstate,
 
 	/* Process RETURNING if present */
 	if (resultRelInfo->ri_projectReturning)
+	{
+		/*
+		 * If the RETURNING list contains system columns other than ctid and
+		 * tableOid, we should make sure that the system columns are available
+		 * in a slot that supports system columns.
+		 */
+		if (TTS_IS_VIRTUAL(slot) && resultRelInfo->ri_projectReturning->has_non_slot_system_cols)
+		{
+			/* Fetch the inserted tuple to ensure that system columns are present. */
+			TupleTableSlot *returningSlot =
+							   ExecGetReturningSlot(estate, resultRelInfo);
+			Assert(!TTS_IS_VIRTUAL(returningSlot));
+			if (!table_tuple_fetch_row_version(resultRelationDesc,
+											   &slot->tts_tid,
+											   SnapshotAny,
+											   returningSlot))
+				elog(ERROR, "failed to fetch inserted tuple for INSERT RETURNING");
+			slot = returningSlot;
+		}
 		result = ExecProcessReturning(resultRelInfo, slot, planSlot);
+	}
 
 	return result;
 }

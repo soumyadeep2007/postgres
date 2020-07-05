@@ -333,6 +333,8 @@ typedef struct ProjectionInfo
 	ExprState	pi_state;
 	/* expression context in which to evaluate expression */
 	ExprContext *pi_exprContext;
+	/* projection contains system columns other than ctid and tableOid */
+	bool		has_non_slot_system_cols;
 } ProjectionInfo;
 
 /* ----------------
