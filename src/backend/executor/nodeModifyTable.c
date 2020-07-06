@@ -686,19 +686,16 @@ ExecInsert(ModifyTableState *mtstate,
 		 */
 		if (TTS_IS_VIRTUAL(slot) && resultRelInfo->ri_projectReturning->has_non_slot_system_cols)
 		{
-			/*
-			 * Explicitly supply the system columns that are not ctid and
-			 * tableOid. So, supply the system columns as we do when we insert.
-			 * See heap_prepare_insert().
-			 */
-			TupleTableSlot *returningSlot = ExecInitExtraTupleSlot(estate,
-																   RelationGetDescr(resultRelationDesc),
-																   &TTSOpsHeapTuple);
-			HeapTuple heapTuple = ExecFetchSlotHeapTuple(slot, true, NULL);
-			HeapTupleHeaderSetXmin(heapTuple->t_data, GetCurrentTransactionId());
-			HeapTupleHeaderSetXmax(heapTuple->t_data, 0);
-			HeapTupleHeaderSetCmin(heapTuple->t_data, estate->es_output_cid);
-			slot = ExecStoreHeapTuple(heapTuple, returningSlot, true);
+			/* Fetch the inserted tuple to ensure that system columns are present. */
+			TupleTableSlot *returningSlot =
+							   ExecGetReturningSlot(estate, resultRelInfo);
+			Assert(!TTS_IS_VIRTUAL(returningSlot));
+			if (!table_tuple_fetch_row_version(resultRelationDesc,
+											   &slot->tts_tid,
+											   SnapshotAny,
+											   returningSlot))
+				elog(ERROR, "failed to fetch inserted tuple for INSERT RETURNING");
+			slot = returningSlot;
 		}
 		result = ExecProcessReturning(resultRelInfo, slot, planSlot);
 	}
