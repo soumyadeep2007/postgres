@@ -18,6 +18,7 @@
 #include "access/genam.h"
 #include "access/spgist_private.h"
 #include "access/spgxlog.h"
+#include "access/walprohibit.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
@@ -213,6 +214,9 @@ addLeafTuple(Relation index, SpGistState *state, SpGistLeafTuple leafTuple,
 	xlrec.offnumHeadLeaf = InvalidOffsetNumber;
 	xlrec.offnumParent = InvalidOffsetNumber;
 	xlrec.nodeI = 0;
+
+	/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+	AssertWALPermitted_HaveXID();
 
 	START_CRIT_SECTION();
 
@@ -457,6 +461,9 @@ moveLeafs(Relation index, SpGistState *state,
 	Assert(nblkno != current->blkno);
 
 	leafdata = leafptr = palloc(size);
+
+	/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+	AssertWALPermitted_HaveXID();
 
 	START_CRIT_SECTION();
 
@@ -1109,6 +1116,9 @@ doPickSplit(Relation index, SpGistState *state,
 
 	leafdata = leafptr = (char *) palloc(totalLeafSizes);
 
+	/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+	AssertWALPermitted_HaveXID();
+
 	/* Here we begin making the changes to the target pages */
 	START_CRIT_SECTION();
 
@@ -1517,6 +1527,9 @@ spgAddNodeAction(Relation index, SpGistState *state,
 	if (PageGetExactFreeSpace(current->page) >=
 		newInnerTuple->size - innerTuple->size)
 	{
+		/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+		AssertWALPermitted_HaveXID();
+
 		/*
 		 * We can replace the inner tuple by new version in-place
 		 */
@@ -1602,6 +1615,9 @@ spgAddNodeAction(Relation index, SpGistState *state,
 			xlrec.parentBlk = 1;
 		else
 			xlrec.parentBlk = 2;
+
+		/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+		AssertWALPermitted_HaveXID();
 
 		START_CRIT_SECTION();
 
@@ -1787,6 +1803,9 @@ spgSplitNodeAction(Relation index, SpGistState *state,
 									postfixTuple->size + sizeof(ItemIdData),
 									&xlrec.newPage);
 	}
+
+	/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+	AssertWALPermitted_HaveXID();
 
 	START_CRIT_SECTION();
 

@@ -17,6 +17,16 @@
 #include "storage/procsignal.h"
 
 /*
+ * Assert flag to enforce WAL insert permission check rule before starting a
+ * critical section for the WAL writes.  For this, either of CheckWALPermitted,
+ * AssertWALPermitted_HaveXID, or AssertWALPermitted must be called before
+ * starting the critical section.
+ */
+#ifdef USE_ASSERT_CHECKING
+WALPermitCheckState walpermit_checked_state = WALPERMIT_UNCHECKED;
+#endif
+
+/*
  * ProcessBarrierWALProhibit()
  *
  * Handle WAL prohibit state change request.

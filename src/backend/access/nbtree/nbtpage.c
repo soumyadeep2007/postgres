@@ -26,6 +26,7 @@
 #include "access/nbtxlog.h"
 #include "access/tableam.h"
 #include "access/transam.h"
+#include "access/walprohibit.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
@@ -201,6 +202,10 @@ _bt_update_meta_cleanup_info(Relation rel, TransactionId oldestBtpoXact,
 	LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
 	LockBuffer(metabuf, BT_WRITE);
 
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(rel))
+		CheckWALPermitted();
+
 	START_CRIT_SECTION();
 
 	/* upgrade meta-page if needed */
@@ -375,6 +380,10 @@ _bt_getroot(Relation rel, int access)
 		rootopaque->btpo_cycleid = 0;
 		/* Get raw page pointer for metapage */
 		metapg = BufferGetPage(metabuf);
+
+		/* Can reach here from VACUUM, so need not have an XID */
+		if (RelationNeedsWAL(rel))
+			CheckWALPermitted();
 
 		/* NO ELOG(ERROR) till meta is updated */
 		START_CRIT_SECTION();
@@ -1068,6 +1077,10 @@ _bt_delitems_vacuum(Relation rel, Buffer buf,
 		}
 	}
 
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(rel))
+		CheckWALPermitted();
+
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
@@ -1194,6 +1207,9 @@ _bt_delitems_delete(Relation rel, Buffer buf,
 	if (XLogStandbyInfoActive() && RelationNeedsWAL(rel))
 		latestRemovedXid =
 			_bt_xid_horizon(rel, heapRel, page, deletable, ndeletable);
+
+	/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+	AssertWALPermitted_HaveXID();
 
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
@@ -1812,6 +1828,10 @@ _bt_mark_page_halfdead(Relation rel, Buffer leafbuf, BTStack stack)
 	 */
 	PredicateLockPageCombine(rel, leafblkno, leafrightsib);
 
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(rel))
+		CheckWALPermitted();
+
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
@@ -2167,6 +2187,10 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 	/*
 	 * Here we begin doing the deletion.
 	 */
+
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(rel))
+		CheckWALPermitted();
 
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();

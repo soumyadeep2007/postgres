@@ -59,6 +59,7 @@
 #include "access/parallel.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
+#include "access/walprohibit.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/storage.h"
@@ -1203,6 +1204,10 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 			 */
 			if (!PageIsAllVisible(page))
 			{
+				/* Can reach here from VACUUM, so need not have an XID */
+				if (RelationNeedsWAL(onerel))
+					CheckWALPermitted();
+
 				START_CRIT_SECTION();
 
 				/* mark buffer dirty before writing a WAL record */
@@ -1471,6 +1476,10 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		 */
 		if (nfrozen > 0)
 		{
+			/* Can reach here from VACUUM, so need not have an XID */
+			if (RelationNeedsWAL(onerel))
+				CheckWALPermitted();
+
 			START_CRIT_SECTION();
 
 			MarkBufferDirty(buf);
@@ -1916,6 +1925,10 @@ lazy_vacuum_page(Relation onerel, BlockNumber blkno, Buffer buffer,
 	/* Update error traceback information */
 	update_vacuum_error_info(vacrelstats, &saved_err_info, VACUUM_ERRCB_PHASE_VACUUM_HEAP,
 							 blkno);
+
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(onerel))
+		CheckWALPermitted();
 
 	START_CRIT_SECTION();
 

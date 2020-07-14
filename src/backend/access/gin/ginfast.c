@@ -20,6 +20,7 @@
 
 #include "access/gin_private.h"
 #include "access/ginxlog.h"
+#include "access/walprohibit.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_am.h"
@@ -67,6 +68,9 @@ writeListPage(Relation index, Buffer buffer,
 				off;
 	PGAlignedBlock workspace;
 	char	   *ptr;
+
+	/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+	AssertWALPermitted_HaveXID();
 
 	START_CRIT_SECTION();
 
@@ -587,7 +591,11 @@ shiftList(Relation index, Buffer metabuffer, BlockNumber newHead,
 		 * critical section.
 		 */
 		if (RelationNeedsWAL(index))
+		{
+			/* Can reach here from VACUUM, so need not have an XID */
+			CheckWALPermitted();
 			XLogEnsureRecordSpace(data.ndeleted, 0);
+		}
 
 		START_CRIT_SECTION();
 

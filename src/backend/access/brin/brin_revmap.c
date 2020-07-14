@@ -26,6 +26,7 @@
 #include "access/brin_tuple.h"
 #include "access/brin_xlog.h"
 #include "access/rmgr.h"
+#include "access/walprohibit.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
@@ -397,6 +398,10 @@ brinRevmapDesummarizeRange(Relation idxrel, BlockNumber heapBlk)
 	 * crashed or aborted summarization; remove them silently.
 	 */
 
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(idxrel))
+		CheckWALPermitted();
+
 	START_CRIT_SECTION();
 
 	ItemPointerSetInvalid(&invalidIptr);
@@ -605,6 +610,9 @@ revmap_physical_extend(BrinRevmap *revmap)
 		/* have caller start over */
 		return;
 	}
+
+	/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+	AssertWALPermitted_HaveXID();
 
 	/*
 	 * Ok, we have now locked the metapage and the target block. Re-initialize

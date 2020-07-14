@@ -22,6 +22,7 @@
 #include "access/hash_xlog.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "access/walprohibit.h"
 #include "catalog/index.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"
@@ -572,6 +573,10 @@ loop_top:
 		goto loop_top;
 	}
 
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(rel))
+		CheckWALPermitted();
+
 	/* Okay, we're really done.  Update tuple count in metapage. */
 	START_CRIT_SECTION();
 
@@ -787,6 +792,10 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
 		 */
 		if (ndeletable > 0)
 		{
+			/* Can reach here from VACUUM, so need not have an XID */
+			if (RelationNeedsWAL(rel))
+				CheckWALPermitted();
+
 			/* No ereport(ERROR) until changes are logged */
 			START_CRIT_SECTION();
 
@@ -881,6 +890,10 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
 
 		page = BufferGetPage(bucket_buf);
 		bucket_opaque = (HashPageOpaque) PageGetSpecialPointer(page);
+
+		/* Can reach here from VACUUM, so need not have an XID */
+		if (RelationNeedsWAL(rel))
+			CheckWALPermitted();
 
 		/* No ereport(ERROR) until changes are logged */
 		START_CRIT_SECTION();

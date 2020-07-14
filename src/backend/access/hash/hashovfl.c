@@ -19,6 +19,7 @@
 
 #include "access/hash.h"
 #include "access/hash_xlog.h"
+#include "access/walprohibit.h"
 #include "miscadmin.h"
 #include "utils/rel.h"
 
@@ -312,6 +313,9 @@ _hash_addovflpage(Relation rel, Buffer metabuf, Buffer buf, bool retain_pin)
 
 found:
 
+	/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+	AssertWALPermitted_HaveXID();
+
 	/*
 	 * Do the update.  No ereport(ERROR) until changes are logged. We want to
 	 * log the changes for bitmap page and overflow page together to avoid
@@ -576,6 +580,10 @@ _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 	/* This operation needs to log multiple tuples, prepare WAL for that */
 	if (RelationNeedsWAL(rel))
 		XLogEnsureRecordSpace(HASH_XLOG_FREE_OVFL_BUFS, 4 + nitups);
+
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(rel))
+		CheckWALPermitted();
 
 	START_CRIT_SECTION();
 
@@ -929,7 +937,13 @@ readpage:
 					 * WAL for that.
 					 */
 					if (RelationNeedsWAL(rel))
+					{
+						/*
+						 * Can reach here from VACUUM, so need not have an XID
+						 */
+						CheckWALPermitted();
 						XLogEnsureRecordSpace(0, 3 + nitups);
+					}
 
 					START_CRIT_SECTION();
 

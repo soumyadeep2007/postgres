@@ -934,6 +934,10 @@ RequestCheckpoint(int flags)
 	int			old_failed,
 				old_started;
 
+	/* The checkpoint is allowed in recovery but not in WAL prohibit state */
+	if (!RecoveryInProgress())
+		CheckWALPermitted();
+
 	/*
 	 * If in a standalone backend, just do it ourselves.
 	 */

@@ -17,6 +17,7 @@
 
 #include "access/hash.h"
 #include "access/hash_xlog.h"
+#include "access/walprohibit.h"
 #include "miscadmin.h"
 #include "storage/buf_internals.h"
 #include "storage/lwlock.h"
@@ -192,6 +193,9 @@ restart_insert:
 	 * incrementing it, check to see if it's time for a split.
 	 */
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+
+	/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+	AssertWALPermitted_HaveXID();
 
 	/* Do the update.  No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
@@ -369,6 +373,10 @@ _hash_vacuum_one_page(Relation rel, Relation hrel, Buffer metabuf, Buffer buf)
 		 * Write-lock the meta page so that we can decrement tuple count.
 		 */
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+
+		/* Can reach here from VACUUM, so need not have an XID */
+		if (RelationNeedsWAL(rel))
+			CheckWALPermitted();
 
 		/* No ereport(ERROR) until changes are logged */
 		START_CRIT_SECTION();

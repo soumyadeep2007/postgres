@@ -82,6 +82,7 @@
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/twophase_rmgr.h"
+#include "access/walprohibit.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -1111,6 +1112,9 @@ EndPrepare(GlobalTransaction gxact)
 	 * CheckPointTwoPhase.
 	 */
 	XLogEnsureRecordSpace(0, records.num_chunks);
+
+	/* Recording transaction prepares, so we'll have an XID */
+	AssertWALPermitted_HaveXID();
 
 	START_CRIT_SECTION();
 
@@ -2204,6 +2208,9 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	replorigin = (replorigin_session_origin != InvalidRepOriginId &&
 				  replorigin_session_origin != DoNotReplicateId);
 
+	/* COMMIT PREPARED need not have an XID */
+	CheckWALPermitted();
+
 	START_CRIT_SECTION();
 
 	/* See notes in RecordTransactionCommit */
@@ -2293,6 +2300,9 @@ RecordTransactionAbortPrepared(TransactionId xid,
 	if (TransactionIdDidCommit(xid))
 		elog(PANIC, "cannot abort transaction %u, it was already committed",
 			 xid);
+
+	/* ROLLBACK PREPARED need not have an XID */
+	CheckWALPermitted();
 
 	START_CRIT_SECTION();
 

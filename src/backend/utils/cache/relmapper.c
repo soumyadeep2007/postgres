@@ -43,6 +43,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "access/walprohibit.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -840,6 +841,9 @@ write_relmap_file(bool shared, RelMapFile *newmap,
 	{
 		xl_relmap_update xlrec;
 		XLogRecPtr	lsn;
+
+		/* Must be performing an INSERT or UPDATE, so we'll have an XID */
+		AssertWALPermitted_HaveXID();
 
 		/* now errors are fatal ... */
 		START_CRIT_SECTION();

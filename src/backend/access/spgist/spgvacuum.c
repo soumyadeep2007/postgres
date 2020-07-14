@@ -19,6 +19,7 @@
 #include "access/spgist_private.h"
 #include "access/spgxlog.h"
 #include "access/transam.h"
+#include "access/walprohibit.h"
 #include "access/xloginsert.h"
 #include "catalog/storage_xlog.h"
 #include "commands/vacuum.h"
@@ -323,6 +324,10 @@ vacuumLeafPage(spgBulkDeleteState *bds, Relation index, Buffer buffer,
 	if (nDeletable != xlrec.nDead + xlrec.nPlaceholder + xlrec.nMove)
 		elog(ERROR, "inconsistent counts of deletable tuples");
 
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(index))
+		CheckWALPermitted();
+
 	/* Do the updates */
 	START_CRIT_SECTION();
 
@@ -447,6 +452,10 @@ vacuumLeafRoot(spgBulkDeleteState *bds, Relation index, Buffer buffer)
 	if (xlrec.nDelete == 0)
 		return;					/* nothing more to do */
 
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(index))
+		CheckWALPermitted();
+
 	/* Do the update */
 	START_CRIT_SECTION();
 
@@ -504,6 +513,10 @@ vacuumRedirectAndPlaceholder(Relation index, Buffer buffer)
 
 	xlrec.nToPlaceholder = 0;
 	xlrec.newestRedirectXid = InvalidTransactionId;
+
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(index))
+		CheckWALPermitted();
 
 	START_CRIT_SECTION();
 

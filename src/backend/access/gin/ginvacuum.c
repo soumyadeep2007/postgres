@@ -16,6 +16,7 @@
 
 #include "access/gin_private.h"
 #include "access/ginxlog.h"
+#include "access/walprohibit.h"
 #include "access/xloginsert.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
@@ -158,6 +159,10 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	 * right sibling.
 	 */
 	PredicateLockPageCombine(gvs->index, deleteBlkno, rightlink);
+
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(gvs->index))
+		CheckWALPermitted();
 
 	START_CRIT_SECTION();
 
@@ -650,6 +655,10 @@ ginbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 
 		if (resPage)
 		{
+			/* Can reach here from VACUUM, so need not have an XID */
+			if (RelationNeedsWAL(gvs.index))
+				CheckWALPermitted();
+
 			START_CRIT_SECTION();
 			PageRestoreTempPage(resPage, page);
 			MarkBufferDirty(buffer);

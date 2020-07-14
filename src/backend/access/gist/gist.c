@@ -16,6 +16,7 @@
 
 #include "access/gist_private.h"
 #include "access/gistscan.h"
+#include "access/walprohibit.h"
 #include "catalog/pg_collation.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
@@ -133,6 +134,9 @@ gistbuildempty(Relation index)
 	/* Initialize the root page */
 	buffer = ReadBufferExtended(index, INIT_FORKNUM, P_NEW, RBM_NORMAL, NULL);
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+	/* Building indexes will have an XID */
+	AssertWALPermitted_HaveXID();
 
 	/* Initialize and xlog buffer */
 	START_CRIT_SECTION();
@@ -467,6 +471,10 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		if (!is_build && RelationNeedsWAL(rel))
 			XLogEnsureRecordSpace(npage, 1 + npage * 2);
 
+		/* Can reach here from VACUUM, so need not have an XID */
+		if (RelationNeedsWAL(rel))
+			CheckWALPermitted();
+
 		START_CRIT_SECTION();
 
 		/*
@@ -525,6 +533,10 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 	}
 	else
 	{
+		/* Can reach here from VACUUM, so need not have an XID */
+		if (RelationNeedsWAL(rel))
+			CheckWALPermitted();
+
 		/*
 		 * Enough space.  We always get here if ntup==0.
 		 */
@@ -1665,6 +1677,10 @@ gistprunepage(Relation rel, Page page, Buffer buffer, Relation heapRel)
 
 	if (ndeletable > 0)
 	{
+		/* Can reach here from VACUUM, so need not have an XID */
+		if (RelationNeedsWAL(rel))
+			CheckWALPermitted();
+
 		START_CRIT_SECTION();
 
 		PageIndexMultiDelete(page, deletable, ndeletable);

@@ -16,6 +16,7 @@
 
 #include "access/gin_private.h"
 #include "access/ginxlog.h"
+#include "access/walprohibit.h"
 #include "access/xloginsert.h"
 #include "lib/ilist.h"
 #include "miscadmin.h"
@@ -836,7 +837,11 @@ ginVacuumPostingTreeLeaf(Relation indexrel, Buffer buffer, GinVacuumState *gvs)
 		}
 
 		if (RelationNeedsWAL(indexrel))
+		{
+			/* Can reach here from VACUUM, so need not have an XID */
+			CheckWALPermitted();
 			computeLeafRecompressWALData(leaf);
+		}
 
 		/* Apply changes to page */
 		START_CRIT_SECTION();
@@ -1777,6 +1782,7 @@ createPostingTree(Relation index, ItemPointerData *items, uint32 nitems,
 	int			nrootitems;
 	int			rootsize;
 	bool		is_build = (buildStats != NULL);
+	bool		needwal;
 
 	/* Construct the new root page in memory first. */
 	tmppage = (Page) palloc(BLCKSZ);
@@ -1825,12 +1831,18 @@ createPostingTree(Relation index, ItemPointerData *items, uint32 nitems,
 	 */
 	PredicateLockPageSplit(index, BufferGetBlockNumber(entrybuffer), blkno);
 
+	needwal = RelationNeedsWAL(index) && !is_build;
+
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (needwal)
+		CheckWALPermitted();
+
 	START_CRIT_SECTION();
 
 	PageRestoreTempPage(tmppage, page);
 	MarkBufferDirty(buffer);
 
-	if (RelationNeedsWAL(index) && !is_build)
+	if (needwal)
 	{
 		XLogRecPtr	recptr;
 		ginxlogCreatePostingTree data;

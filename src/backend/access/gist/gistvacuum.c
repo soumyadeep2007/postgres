@@ -17,6 +17,7 @@
 #include "access/genam.h"
 #include "access/gist_private.h"
 #include "access/transam.h"
+#include "access/walprohibit.h"
 #include "commands/vacuum.h"
 #include "lib/integerset.h"
 #include "miscadmin.h"
@@ -341,6 +342,10 @@ restart:
 		 */
 		if (ntodelete > 0)
 		{
+			/* Can reach here from VACUUM, so need not have an XID */
+			if (RelationNeedsWAL(rel))
+				CheckWALPermitted();
+
 			START_CRIT_SECTION();
 
 			MarkBufferDirty(buffer);
@@ -633,6 +638,10 @@ gistdeletepage(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 * than needed, but let's keep it safe and simple.)
 	 */
 	txid = ReadNextFullTransactionId();
+
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(info->index))
+		CheckWALPermitted();
 
 	START_CRIT_SECTION();
 

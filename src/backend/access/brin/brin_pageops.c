@@ -14,6 +14,7 @@
 #include "access/brin_pageops.h"
 #include "access/brin_revmap.h"
 #include "access/brin_xlog.h"
+#include "access/walprohibit.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
@@ -176,6 +177,10 @@ brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
 	if (((BrinPageFlags(oldpage) & BRIN_EVACUATE_PAGE) == 0) &&
 		brin_can_do_samepage_update(oldbuf, origsz, newsz))
 	{
+		/* Can reach here from VACUUM, so need not have an XID */
+		if (RelationNeedsWAL(idxrel))
+			CheckWALPermitted();
+
 		START_CRIT_SECTION();
 		if (!PageIndexTupleOverwrite(oldpage, oldoff, (Item) unconstify(BrinTuple *, newtup), newsz))
 			elog(ERROR, "failed to replace BRIN tuple");
@@ -239,6 +244,10 @@ brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
 		Size		freespace = 0;
 
 		revmapbuf = brinLockRevmapPageForUpdate(revmap, heapBlk);
+
+		/* Can reach here from VACUUM, so need not have an XID */
+		if (RelationNeedsWAL(idxrel))
+			CheckWALPermitted();
 
 		START_CRIT_SECTION();
 
@@ -404,6 +413,10 @@ brin_doinsert(Relation idxrel, BlockNumber pagesPerRange,
 
 	page = BufferGetPage(*buffer);
 	blk = BufferGetBlockNumber(*buffer);
+
+	/* Can reach here from VACUUM, so need not have an XID */
+	if (RelationNeedsWAL(idxrel))
+		CheckWALPermitted();
 
 	/* Execute the actual insertion */
 	START_CRIT_SECTION();
@@ -880,6 +893,9 @@ brin_initialize_empty_new_buffer(Relation idxrel, Buffer buffer)
 	BRIN_elog((DEBUG2,
 			   "brin_initialize_empty_new_buffer: initializing blank page %u",
 			   BufferGetBlockNumber(buffer)));
+
+	/* Can reach here from VACUUM, so need not have an XID */
+	CheckWALPermitted();
 
 	START_CRIT_SECTION();
 	page = BufferGetPage(buffer);
