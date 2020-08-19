@@ -35,8 +35,8 @@ static void usage(const char *progname);
 static void createBackupLabel(XLogRecPtr startpoint, TimeLineID starttli,
 							  XLogRecPtr checkpointloc);
 
-static void digestControlFile(ControlFileData *ControlFile, char *source,
-							  size_t size);
+static void digestControlFile(ControlFileData *ControlFile,
+							  const char *content, size_t size);
 static void getRestoreCommand(const char *argv0);
 static void sanityChecks(void);
 static void findCommonAncestorTimeline(XLogRecPtr *recptr, int *tliIndex);
@@ -69,6 +69,8 @@ int			targetNentries;
 uint64		fetch_size;
 uint64		fetch_done;
 
+static PGconn *conn;
+static rewind_source *source;
 
 static void
 usage(const char *progname)
@@ -269,19 +271,29 @@ main(int argc, char **argv)
 
 	atexit(disconnect_atexit);
 
-	/* Connect to remote server */
-	if (connstr_source)
-		libpqConnect(connstr_source);
-
 	/*
-	 * Ok, we have all the options and we're ready to start. Read in all the
-	 * information we need from both clusters.
+	 * Ok, we have all the options and we're ready to start. First, connect
+	 * to remote server.
 	 */
-	buffer = slurpFile(datadir_target, "global/pg_control", &size);
-	digestControlFile(&ControlFile_target, buffer, size);
-	pg_free(buffer);
+	if (connstr_source)
+	{
+		conn = PQconnectdb(connstr_source);
+
+		if (PQstatus(conn) == CONNECTION_BAD)
+			pg_fatal("could not connect to server: %s",
+					 PQerrorMessage(conn));
+
+		if (showprogress)
+			pg_log_info("connected to server");
+
+		source = init_libpq_source(conn);
+	}
+	else
+		source = init_local_source(datadir_source);
 
 	/*
+	 * Check the status of the target instance.
+	 *
 	 * If the target instance was not cleanly shut down, start and stop the
 	 * target cluster once in single-user mode to enforce recovery to finish,
 	 * ensuring that the cluster can be used by pg_rewind.  Note that if
@@ -289,6 +301,10 @@ main(int argc, char **argv)
 	 * need to make sure by themselves that the target cluster is in a clean
 	 * state.
 	 */
+	buffer = slurpFile(datadir_target, "global/pg_control", &size);
+	digestControlFile(&ControlFile_target, buffer, size);
+	pg_free(buffer);
+
 	if (!no_ensure_shutdown &&
 		ControlFile_target.state != DB_SHUTDOWNED &&
 		ControlFile_target.state != DB_SHUTDOWNED_IN_RECOVERY)
@@ -300,17 +316,20 @@ main(int argc, char **argv)
 		pg_free(buffer);
 	}
 
-	buffer = fetchFile("global/pg_control", &size);
+	buffer = source->fetch_file(source, "global/pg_control", &size);
 	digestControlFile(&ControlFile_source, buffer, size);
 	pg_free(buffer);
 
 	sanityChecks();
 
 	/*
+	 * Find the common ancestor timeline between the clusters.
+	 *
 	 * If both clusters are already on the same timeline, there's nothing to
 	 * do.
 	 */
-	if (ControlFile_target.checkPointCopy.ThisTimeLineID == ControlFile_source.checkPointCopy.ThisTimeLineID)
+	if (ControlFile_target.checkPointCopy.ThisTimeLineID ==
+		ControlFile_source.checkPointCopy.ThisTimeLineID)
 	{
 		pg_log_info("source and target cluster are on the same timeline");
 		rewind_needed = false;
@@ -370,12 +389,12 @@ main(int argc, char **argv)
 				chkpttli);
 
 	/*
-	 * Collect information about all files in the target and source systems.
+	 * Collect information about all files in the both data directories.
 	 */
 	if (showprogress)
 		pg_log_info("reading source file list");
 	filemap_init();
-	fetchSourceFileList();
+	source->traverse_files(source, &process_source_file);
 
 	if (showprogress)
 		pg_log_info("reading target file list");
@@ -423,7 +442,7 @@ main(int argc, char **argv)
 	 * modified the target directory and there is no turning back!
 	 */
 
-	execute_file_actions(filemap);
+	execute_file_actions(filemap, source);
 
 	progress_report(true);
 
@@ -443,7 +462,7 @@ main(int argc, char **argv)
 
 	if (connstr_source)
 	{
-		endrec = libpqGetCurrentXlogInsertLocation();
+		endrec = source->get_current_wal_insert_lsn(source);
 		endtli = ControlFile_source.checkPointCopy.ThisTimeLineID;
 	}
 	else
@@ -464,6 +483,14 @@ main(int argc, char **argv)
 	if (writerecoveryconf && !dry_run)
 		WriteRecoveryConfig(conn, datadir_target,
 							GenerateRecoveryConfig(conn, NULL));
+
+	/* don't need the source connection anymore */
+	source->destroy(source);
+	if (conn)
+	{
+		PQfinish(conn);
+		conn = NULL;
+	}
 
 	pg_log_info("Done!");
 
@@ -627,7 +654,7 @@ getTimelineHistory(ControlFileData *controlFile, int *nentries)
 
 		/* Get history file from appropriate source */
 		if (controlFile == &ControlFile_source)
-			histfile = fetchFile(path, NULL);
+			histfile = source->fetch_file(source, path, NULL);
 		else if (controlFile == &ControlFile_target)
 			histfile = slurpFile(datadir_target, path, NULL);
 		else
@@ -783,16 +810,17 @@ checkControlFile(ControlFileData *ControlFile)
 }
 
 /*
- * Verify control file contents in the buffer src, and copy it to *ControlFile.
+ * Verify control file contents in the buffer 'content', and copy it to *ControlFile.
  */
 static void
-digestControlFile(ControlFileData *ControlFile, char *src, size_t size)
+digestControlFile(ControlFileData *ControlFile,
+				  const char *content, size_t size)
 {
 	if (size != PG_CONTROL_FILE_SIZE)
 		pg_fatal("unexpected control file size %d, expected %d",
 				 (int) size, PG_CONTROL_FILE_SIZE);
 
-	memcpy(ControlFile, src, sizeof(ControlFileData));
+	memcpy(ControlFile, content, sizeof(ControlFileData));
 
 	/* set and validate WalSegSz */
 	WalSegSz = ControlFile->xlog_seg_size;

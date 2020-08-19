@@ -24,37 +24,78 @@
 #include "filemap.h"
 #include "pg_rewind.h"
 
-void
-fetchSourceFileList(void)
-{
-	if (datadir_source)
-		traverse_datadir(datadir_source, &process_source_file);
-	else
-		libpqProcessFileList();
-}
-
 /*
- * Fetch all relation data files that are marked in the given data page map.
+ * Execute the actions in the file map, fetching data from the source
+ * system as needed.
  */
 void
-execute_file_actions(filemap_t *filemap)
+execute_file_actions(filemap_t *filemap, rewind_source *source)
 {
-	if (datadir_source)
-		copy_executeFileMap(filemap);
-	else
-		libpq_executeFileMap(filemap);
-}
+	int			i;
 
-/*
- * Fetch a single file into a malloc'd buffer. The file size is returned
- * in *filesize. The returned buffer is always zero-terminated, which is
- * handy for text files.
- */
-char *
-fetchFile(const char *filename, size_t *filesize)
-{
-	if (datadir_source)
-		return slurpFile(datadir_source, filename, filesize);
-	else
-		return libpqGetFile(filename, filesize);
+	for (i = 0; i < filemap->nactions; i++)
+	{
+		file_entry_t *entry = filemap->actions[i];
+		datapagemap_iterator_t *iter;
+		BlockNumber blkno;
+		off_t		offset;
+
+		/*
+		 * If this is a relation file, copy the modified blocks.
+		 *
+		 * This is in addition to any other changes.
+		 */
+		iter = datapagemap_iterate(&entry->target_modified_pages);
+		while (datapagemap_next(iter, &blkno))
+		{
+			offset = blkno * BLCKSZ;
+
+			source->queue_fetch_range(source, entry->path, offset, BLCKSZ);
+		}
+		pg_free(iter);
+
+		switch (entry->action)
+		{
+			case FILE_ACTION_NONE:
+				/* nothing else to do */
+				break;
+
+			case FILE_ACTION_COPY:
+				/* Truncate the old file out of the way, if any */
+				open_target_file(entry->path, true);
+				source->queue_fetch_range(source, entry->path,
+										  0, entry->source_size);
+				break;
+
+			case FILE_ACTION_TRUNCATE:
+				truncate_target_file(entry->path, entry->source_size);
+				break;
+
+			case FILE_ACTION_COPY_TAIL:
+				source->queue_fetch_range(source, entry->path,
+										  entry->target_size,
+										  entry->source_size - entry->target_size);
+				break;
+
+			case FILE_ACTION_REMOVE:
+				remove_target(entry);
+				break;
+
+			case FILE_ACTION_CREATE:
+				create_target(entry);
+				break;
+
+			case FILE_ACTION_UNDECIDED:
+				pg_fatal("no action decided for \"%s\"", entry->path);
+				break;
+		}
+	}
+
+	/*
+	 * We've now copied the list of file ranges that we need to fetch to the
+	 * temporary table. Now, actually fetch all of those ranges. XXX
+	 */
+	source->finish_fetch(source);
+
+	close_target_file();
 }
