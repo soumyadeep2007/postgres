@@ -129,6 +129,7 @@ main(int argc, char **argv)
 	TimeLineID	endtli;
 	ControlFileData ControlFile_new;
 	bool		writerecoveryconf = false;
+	filemap_t  *filemap;
 
 	pg_logging_init(argv[0]);
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("pg_rewind"));
@@ -371,10 +372,11 @@ main(int argc, char **argv)
 	/*
 	 * Collect information about all files in the target and source systems.
 	 */
-	filemap_create();
 	if (showprogress)
 		pg_log_info("reading source file list");
+	filemap_init();
 	fetchSourceFileList();
+
 	if (showprogress)
 		pg_log_info("reading target file list");
 	traverse_datadir(datadir_target, &process_target_file);
@@ -395,13 +397,13 @@ main(int argc, char **argv)
 	 * We have collected all information we need from both systems. Decide
 	 * what to do with each file.
 	 */
-	filemap_finalize();
+	filemap = filemap_finalize();
 	if (showprogress)
-		calculate_totals();
+		calculate_totals(filemap);
 
 	/* this is too verbose even for verbose mode */
 	if (debug)
-		print_filemap();
+		print_filemap(filemap);
 
 	/*
 	 * Ok, we're ready to start copying things over.
@@ -421,7 +423,7 @@ main(int argc, char **argv)
 	 * modified the target directory and there is no turning back!
 	 */
 
-	executeFileMap();
+	execute_file_actions(filemap);
 
 	progress_report(true);
 

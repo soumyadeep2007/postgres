@@ -207,9 +207,9 @@ copy_executeFileMap(filemap_t *map)
 	file_entry_t *entry;
 	int			i;
 
-	for (i = 0; i < map->narray; i++)
+	for (i = 0; i < map->nactions; i++)
 	{
-		entry = map->array[i];
+		entry = map->actions[i];
 		execute_pagemap(&entry->target_modified_pages, entry->path);
 
 		switch (entry->action)
