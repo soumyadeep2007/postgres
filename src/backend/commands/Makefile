@@ -25,6 +25,7 @@ OBJS = \
 	conversioncmds.o \
 	copy.o \
 	copyfrom.o \
+	copyfromparse.o \
 	copyto.o \
 	createas.o \
 	dbcommands.o \
