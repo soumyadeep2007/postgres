@@ -203,6 +203,8 @@ extern bool TransactionStartedDuringRecovery(void);
 /* in transam/varsup.c */
 extern PGDLLIMPORT VariableCache ShmemVariableCache;
 
+extern bool EnableRestorePointRecoveryPause;
+
 /*
  * prototypes for functions in transam/transam.c
  */

@@ -881,6 +881,16 @@ static const unit_conversion time_unit_conversion_table[] =
 static struct config_bool ConfigureNamesBool[] =
 {
 	{
+		{"gp_enable_restore_point_recovery_pause", PGC_SIGHUP, DEVELOPER_OPTIONS,
+		 gettext_noop("Enables restore point recovery pause."),
+		 NULL,
+		 GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&EnableRestorePointRecoveryPause,
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of sequential-scan plans."),
 			NULL,

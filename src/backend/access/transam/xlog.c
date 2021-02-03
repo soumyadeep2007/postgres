@@ -104,6 +104,8 @@ int			wal_level = WAL_LEVEL_MINIMAL;
 int			CommitDelay = 0;	/* precommit delay in microseconds */
 int			CommitSiblings = 5; /* # concurrent xacts needed to sleep */
 int			wal_retrieve_retry_interval = 5000;
+bool		EnableRestorePointRecoveryPause = false;
+
 
 #ifdef WAL_DEBUG
 bool		XLOG_DEBUG = false;
@@ -7027,6 +7029,18 @@ StartupXLOG(void)
 		XLogCtl->recoveryPause = false;
 		SpinLockRelease(&XLogCtl->info_lck);
 
+		/*
+		 * Greenspore: Pause recovery initially if GUC is set so that the
+		 * recovery process doesn't just start replaying WAL asap. Also set
+		 * the recovery target to automatically promote instead of default
+		 * pause.
+		 */
+		if (EnableRestorePointRecoveryPause)
+		{
+			SetRecoveryPause(true);
+			recoveryTargetAction = RECOVERY_TARGET_ACTION_PROMOTE;
+		}
+
 		/* Also ensure XLogReceiptTime has a sane value */
 		XLogReceiptTime = GetCurrentTimestamp();
 
@@ -7130,7 +7144,8 @@ StartupXLOG(void)
 				/*
 				 * Have we reached our recovery target?
 				 */
-				if (recoveryStopsBefore(xlogreader))
+				if (recoveryStopsBefore(xlogreader) ||
+					(EnableRestorePointRecoveryPause && CheckForStandbyTrigger()))
 				{
 					reachedStopPoint = true;	/* see below */
 					break;
@@ -9869,6 +9884,8 @@ xlog_redo(XLogReaderState *record)
 	}
 	else if (info == XLOG_RESTORE_POINT)
 	{
+		if (EnableRestorePointRecoveryPause)
+			SetRecoveryPause(true);
 		/* nothing to do here */
 	}
 	else if (info == XLOG_FPI || info == XLOG_FPI_FOR_HINT)
